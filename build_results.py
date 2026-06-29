@@ -2,6 +2,9 @@
 Re-runs the diabetes CRISP-DM pipeline (same logic as the notebook) and dumps every
 number the Streamlit app needs into results.json + saves model artifacts.
 Single source of truth so the app never shows a number that doesn't match the notebook.
+
+Includes the three "tried but rejected" experiments from the notebook (weighted ensemble,
+KNN imputation, 3-sigma outliers) so the app can show real numbers, not duplicated text.
 """
 import json
 import joblib
@@ -10,10 +13,11 @@ import pandas as pd
 
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score, GridSearchCV
 from sklearn.preprocessing import StandardScaler
+from sklearn.impute import KNNImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
-from sklearn.svm import SVC
+from xgboost import XGBClassifier
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix, precision_recall_curve,
@@ -43,6 +47,85 @@ for col in impute_columns:
     X_train[col] = X_train[col].replace(0, np.nan).fillna(train_medians[col])
     X_test[col] = X_test[col].replace(0, np.nan).fillna(train_medians[col])
 
+# ---------------------------------------------------------------------------
+# Experiment 1: KNN imputation vs. median (same comparison as the notebook)
+# ---------------------------------------------------------------------------
+X_train_for_knn = train_data[feature_columns].copy()
+X_test_for_knn = test_data[feature_columns].copy()
+for col in heavy_missing_cols:
+    X_train_for_knn[f"{col}_was_missing"] = (X_train_for_knn[col] == 0).astype(int)
+    X_test_for_knn[f"{col}_was_missing"] = (X_test_for_knn[col] == 0).astype(int)
+for col in impute_columns:
+    X_train_for_knn[col] = X_train_for_knn[col].replace(0, np.nan)
+    X_test_for_knn[col] = X_test_for_knn[col].replace(0, np.nan)
+
+knn_imputer = KNNImputer(n_neighbors=5)
+X_train_knn = pd.DataFrame(knn_imputer.fit_transform(X_train_for_knn), columns=X_train_for_knn.columns, index=X_train_for_knn.index)
+X_test_knn = pd.DataFrame(knn_imputer.transform(X_test_for_knn), columns=X_test_for_knn.columns, index=X_test_for_knn.index)
+
+def _quick_score(X_tr, X_te, label):
+    scaler_cmp = StandardScaler()
+    X_tr_s = scaler_cmp.fit_transform(X_tr)
+    X_te_s = scaler_cmp.transform(X_te)
+    clf = DecisionTreeClassifier(max_depth=3, random_state=RANDOM_STATE, class_weight="balanced")
+    clf.fit(X_tr_s, y_train)
+    pred = clf.predict(X_te_s)
+    return {
+        "imputation": label,
+        "accuracy": float(accuracy_score(y_test, pred)),
+        "precision": float(precision_score(y_test, pred, zero_division=0)),
+        "recall": float(recall_score(y_test, pred, zero_division=0)),
+        "f1": float(f1_score(y_test, pred, zero_division=0)),
+    }
+
+imputation_experiment = {
+    "median": _quick_score(X_train, X_test, "Median"),
+    "knn": _quick_score(X_train_knn, X_test_knn, "KNN (k=5)"),
+    "verdict": "median",
+    "note": (
+        "KNN scored higher on Accuracy/Precision but lower on Recall (this project's "
+        "primary metric) than median imputation. With Insulin ~49% missing, KNN's "
+        "'nearest neighbors' are themselves often imputed rows, making borrowed values "
+        "less trustworthy. Median imputation is kept for the deployed model."
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Experiment 2: IQR vs. 3-sigma outlier detection (on median-imputed X_train)
+# ---------------------------------------------------------------------------
+outlier_comparison = []
+for col in feature_columns:
+    q1, q3 = X_train[col].quantile([0.25, 0.75])
+    iqr = q3 - q1
+    lower_iqr, upper_iqr = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    n_outliers_iqr = int(((X_train[col] < lower_iqr) | (X_train[col] > upper_iqr)).sum())
+
+    mean, std = X_train[col].mean(), X_train[col].std()
+    lower_3s, upper_3s = mean - 3 * std, mean + 3 * std
+    n_outliers_3s = int(((X_train[col] < lower_3s) | (X_train[col] > upper_3s)).sum())
+
+    outlier_comparison.append({
+        "column": col,
+        "iqr_outliers": n_outliers_iqr,
+        "sigma3_outliers": n_outliers_3s,
+        "skew": float(X_train[col].skew()),
+    })
+
+outlier_experiment = {
+    "comparison": outlier_comparison,
+    "verdict": "iqr",
+    "note": (
+        "On the most skewed columns (Insulin, skew~3.08; SkinThickness, skew~0.89), IQR "
+        "and 3-sigma diverge sharply -- 3-sigma's inflated standard deviation on skewed "
+        "data pushes its bounds wider, missing most of what IQR catches. IQR remains the "
+        "primary method; 3-sigma is shown only as a comparison."
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Modeling: 5 classifiers (Logistic Regression, Decision Tree, Random Forest,
+# Gradient Boosting, XGBoost) + weighted soft-voting ensemble
+# ---------------------------------------------------------------------------
 sc_X = StandardScaler()
 final_feature_columns = X_train.columns.tolist()
 X_train_scaled = pd.DataFrame(sc_X.fit_transform(X_train), columns=final_feature_columns, index=X_train.index)
@@ -67,9 +150,12 @@ param_grids = {
         "estimator": GradientBoostingClassifier(random_state=RANDOM_STATE),
         "params": {"n_estimators": [100, 200], "learning_rate": [0.05, 0.1], "max_depth": [2, 3]},
     },
-    "SVM": {
-        "estimator": SVC(kernel="rbf", probability=True, random_state=RANDOM_STATE, class_weight="balanced"),
-        "params": {"C": [0.1, 1, 10], "gamma": ["scale", "auto"]},
+    "XGBoost": {
+        "estimator": XGBClassifier(
+            random_state=RANDOM_STATE, eval_metric="logloss",
+            scale_pos_weight=(y_train == 0).sum() / (y_train == 1).sum(),
+        ),
+        "params": {"n_estimators": [100, 200], "max_depth": [2, 3, 4], "learning_rate": [0.05, 0.1]},
     },
 }
 
@@ -106,13 +192,23 @@ for name, model in trained_models.items():
 model_results_sorted = sorted(model_results, key=lambda r: r["recall"], reverse=True)
 best_3 = [r["model"] for r in model_results_sorted[:3]]
 
-ensemble = VotingClassifier(estimators=[(n, trained_models[n]) for n in best_3], voting="soft")
+# Weighted soft voting: weight_i = CV Recall_i / sum(CV Recall for the 3 base models)
+cv_recall_lookup = {row["model"]: row["cv_recall_mean"] for row in cv_summary}
+cv_recall_values = {name: cv_recall_lookup[name] for name in best_3}
+weight_sum = sum(cv_recall_values.values())
+normalized_weights = {name: v / weight_sum for name, v in cv_recall_values.items()}
+ensemble_weights = [normalized_weights[name] for name in best_3]
+
+ensemble = VotingClassifier(
+    estimators=[(n, trained_models[n]) for n in best_3], voting="soft", weights=ensemble_weights,
+)
 ensemble.fit(X_train, y_train)
 ens_pred = ensemble.predict(X_test)
 ens_prob = ensemble.predict_proba(X_test)[:, 1]
 ensemble_result = {
-    "model": "Soft Voting Ensemble",
+    "model": "Weighted Soft Voting Ensemble",
     "base_models": best_3,
+    "weights": {name: float(normalized_weights[name]) for name in best_3},
     "accuracy": float(accuracy_score(y_test, ens_pred)),
     "precision": float(precision_score(y_test, ens_pred, zero_division=0)),
     "recall": float(recall_score(y_test, ens_pred, zero_division=0)),
@@ -120,8 +216,27 @@ ensemble_result = {
     "roc_auc": float(roc_auc_score(y_test, ens_prob)),
 }
 
-best_model_name = model_results_sorted[0]["model"]
-best_model = trained_models[best_model_name]
+# Candidate pool = every single model + the weighted ensemble; pick final model by Recall
+all_candidates_results = {r["model"]: r["recall"] for r in model_results_sorted}
+all_candidates_results[ensemble_result["model"]] = ensemble_result["recall"]
+best_model_name = max(all_candidates_results, key=all_candidates_results.get)
+ensemble_won = best_model_name == ensemble_result["model"]
+ensemble_experiment = {
+    "base_model_weights": ensemble_result["weights"],
+    "candidate_recalls": all_candidates_results,
+    "selected_model": best_model_name,
+    "ensemble_won": ensemble_won,
+    "note": (
+        "The weighted ensemble outperformed every single model on Recall and was selected."
+        if ensemble_won else
+        "Soft voting averages predicted probabilities across the 3 base models, which "
+        "smooths out the Decision Tree's aggressive (high-Recall) behavior rather than "
+        "amplifying it -- raising Precision but costing Recall, the opposite of this "
+        "project's stated metric priority. The simpler single model wins on Recall."
+    ),
+}
+
+best_model = trained_models[best_model_name] if best_model_name in trained_models else ensemble
 
 # Threshold analysis on best model
 y_prob_best = best_model.predict_proba(X_test)[:, 1]
@@ -207,6 +322,11 @@ results = {
         "recalls": [float(r) for r in recalls[:-1]],
         "f1_scores": [float(f) for f in f1_scores[:-1]],
     },
+    "experiments": {
+        "imputation": imputation_experiment,
+        "outliers": outlier_experiment,
+        "ensemble": ensemble_experiment,
+    },
 }
 
 with open("models/results.json", "w") as f:
@@ -221,3 +341,5 @@ print(f"Best model: {best_model_name}")
 print(f"Cost-weighted threshold: {cost_optimal_threshold:.4f}")
 print(f"Saved results.json with {len(results)} top-level keys")
 print("Feature importances:", importances)
+print()
+print("Experiment verdicts: imputation=median, outliers=iqr, ensemble_won=", ensemble_won)

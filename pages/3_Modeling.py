@@ -14,7 +14,7 @@ results = load_results()
 page_header(
     "Phase 4 · Modeling",
     "Five tuned, cross-validated classifiers",
-    "GridSearchCV + 5-fold Stratified CV for every model — not sklearn defaults.",
+    "GridSearchCV + 5-fold Stratified CV for Logistic Regression, Decision Tree, Random Forest, Gradient Boosting, and XGBoost.",
 )
 
 cv_df = pd.DataFrame(results["cv_summary"])
@@ -68,21 +68,64 @@ st.dataframe(
 )
 
 st.write("")
-st.markdown("##### Soft-voting ensemble")
+st.markdown("##### Experiment: weighted soft-voting ensemble")
 ens = results["ensemble_result"]
+ens_exp = results["experiments"]["ensemble"]
+
+st.markdown(
+    """
+    Rather than an equal-vote ensemble, weights are set proportional to each base model's
+    own cross-validated Recall, normalized to sum to 1 — a model with stronger CV Recall
+    gets proportionally more say in the final probability, consistent with Recall being
+    this project's primary metric (Phase 1).
+    """
+)
+
+weight_col, chart_col = st.columns([1, 2])
+with weight_col:
+    st.markdown("**Base models & weights**")
+    for name, w in ens_exp["base_model_weights"].items():
+        st.markdown(
+            f"""
+            <div style="display:flex; align-items:center; gap:0.6rem; padding:0.35rem 0;">
+                <div style="width:130px; font-size:0.85rem; font-weight:600;">{name}</div>
+                <div style="flex:1; background:#E5E1DA; height:8px; border-radius:4px; overflow:hidden;">
+                    <div style="width:{w*100:.0f}%; height:100%; background:{TEAL};"></div>
+                </div>
+                <div style="width:45px; text-align:right; font-size:0.82rem; color:{MUTED};">{w:.3f}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    st.caption("Weight = CV Recall ÷ sum of CV Recall across the 3 base models.")
+
+with chart_col:
+    candidates = ens_exp["candidate_recalls"]
+    cand_df = pd.DataFrame(
+        [(k, v) for k, v in candidates.items()], columns=["Model", "Recall"]
+    ).sort_values("Recall", ascending=True)
+    colors = [TEAL if m == ens_exp["selected_model"] else (CORAL if "Ensemble" in m else "#D8D4CC") for m in cand_df["Model"]]
+    fig2 = go.Figure(data=[go.Bar(
+        x=cand_df["Recall"], y=cand_df["Model"], orientation="h",
+        marker_color=colors, text=[f"{v:.3f}" for v in cand_df["Recall"]], textposition="outside",
+    )])
+    fig2.update_layout(
+        height=280, margin=dict(t=10, b=10, l=10, r=40),
+        xaxis_title="Test-set Recall", xaxis=dict(range=[0, 1]),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter"),
+    )
+    st.plotly_chart(fig2, width="stretch")
+    st.caption(f"Teal = selected model ({ens_exp['selected_model']}). Coral = the weighted ensemble.")
+
+verdict_class = "callout-teal" if ens_exp["ensemble_won"] else "callout-amber"
 st.markdown(
     f"""
-    <div class="callout-teal">
-    Top 3 models by Recall — <b>{", ".join(ens['base_models'])}</b> — combined via soft
-    voting. Result: Recall={ens['recall']:.3f}, Precision={ens['precision']:.3f},
-    F1={ens['f1']:.3f}, ROC AUC={ens['roc_auc']:.3f}.
+    <div class="{verdict_class}">
+    <b>Verdict: {"ensemble selected" if ens_exp["ensemble_won"] else "single model kept"}.</b>
+    {ens_exp['note']}
     </div>
     """,
     unsafe_allow_html=True,
-)
-st.caption(
-    f"The ensemble didn't outperform the single best model ({results['best_model_name']}) "
-    "on Recall here — included for completeness, not selected as the final deployed model."
 )
 
 footer()

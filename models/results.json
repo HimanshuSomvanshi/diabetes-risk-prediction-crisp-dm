@@ -197,16 +197,17 @@
       "cv_f1_std": 0.03173948763154712
     },
     {
-      "model": "SVM",
+      "model": "XGBoost",
       "best_params": {
-        "C": "1",
-        "gamma": "scale"
+        "learning_rate": "0.05",
+        "max_depth": "2",
+        "n_estimators": "100"
       },
-      "cv_roc_auc_mean": 0.8377865448504984,
-      "cv_recall_mean": 0.7243632336655593,
-      "cv_recall_std": 0.05347404020773401,
-      "cv_f1_mean": 0.6724496424708402,
-      "cv_f1_std": 0.01579908728777741
+      "cv_roc_auc_mean": 0.8310042912513843,
+      "cv_recall_mean": 0.756810631229236,
+      "cv_recall_std": 0.0391632213376515,
+      "cv_f1_mean": 0.6878010029695936,
+      "cv_f1_std": 0.015199900997084886
     }
   ],
   "model_results": [
@@ -219,12 +220,12 @@
       "roc_auc": 0.7791666666666667
     },
     {
-      "model": "SVM",
-      "accuracy": 0.7597402597402597,
-      "precision": 0.6231884057971014,
-      "recall": 0.7962962962962963,
-      "f1": 0.6991869918699187,
-      "roc_auc": 0.808888888888889
+      "model": "XGBoost",
+      "accuracy": 0.7662337662337663,
+      "precision": 0.6285714285714286,
+      "recall": 0.8148148148148148,
+      "f1": 0.7096774193548387,
+      "roc_auc": 0.8109259259259259
     },
     {
       "model": "Random Forest",
@@ -252,17 +253,22 @@
     }
   ],
   "ensemble_result": {
-    "model": "Soft Voting Ensemble",
+    "model": "Weighted Soft Voting Ensemble",
     "base_models": [
       "Decision Tree",
-      "SVM",
+      "XGBoost",
       "Random Forest"
     ],
-    "accuracy": 0.7532467532467533,
-    "precision": 0.625,
-    "recall": 0.7407407407407407,
-    "f1": 0.6779661016949152,
-    "roc_auc": 0.8157407407407407
+    "weights": {
+      "Decision Tree": 0.3596173979251927,
+      "XGBoost": 0.3252117635861807,
+      "Random Forest": 0.31517083848862665
+    },
+    "accuracy": 0.7467532467532467,
+    "precision": 0.6056338028169014,
+    "recall": 0.7962962962962963,
+    "f1": 0.688,
+    "roc_auc": 0.8125925925925925
   },
   "best_model_name": "Decision Tree",
   "threshold_comparison": {
@@ -372,5 +378,97 @@
       0.6019417475728156,
       0.3896103896103896
     ]
+  },
+  "experiments": {
+    "imputation": {
+      "median": {
+        "imputation": "Median",
+        "accuracy": 0.6818181818181818,
+        "precision": 0.5287356321839081,
+        "recall": 0.8518518518518519,
+        "f1": 0.6524822695035462
+      },
+      "knn": {
+        "imputation": "KNN (k=5)",
+        "accuracy": 0.7272727272727273,
+        "precision": 0.5833333333333334,
+        "recall": 0.7777777777777778,
+        "f1": 0.6666666666666666
+      },
+      "verdict": "median",
+      "note": "KNN scored higher on Accuracy/Precision but lower on Recall (this project's primary metric) than median imputation. With Insulin ~49% missing, KNN's 'nearest neighbors' are themselves often imputed rows, making borrowed values less trustworthy. Median imputation is kept for the deployed model."
+    },
+    "outliers": {
+      "comparison": [
+        {
+          "column": "Pregnancies",
+          "iqr_outliers": 2,
+          "sigma3_outliers": 2,
+          "skew": 0.8869195065445491
+        },
+        {
+          "column": "Glucose",
+          "iqr_outliers": 0,
+          "sigma3_outliers": 0,
+          "skew": 0.5568335387108446
+        },
+        {
+          "column": "BloodPressure",
+          "iqr_outliers": 13,
+          "sigma3_outliers": 8,
+          "skew": 0.11504770889934712
+        },
+        {
+          "column": "SkinThickness",
+          "iqr_outliers": 73,
+          "sigma3_outliers": 3,
+          "skew": 0.88644589639611
+        },
+        {
+          "column": "Insulin",
+          "iqr_outliers": 253,
+          "sigma3_outliers": 15,
+          "skew": 3.0764306078739496
+        },
+        {
+          "column": "BMI",
+          "iqr_outliers": 7,
+          "sigma3_outliers": 4,
+          "skew": 0.5738216799524883
+        },
+        {
+          "column": "DiabetesPedigreeFunction",
+          "iqr_outliers": 19,
+          "sigma3_outliers": 8,
+          "skew": 1.8189104289222484
+        },
+        {
+          "column": "Age",
+          "iqr_outliers": 6,
+          "sigma3_outliers": 5,
+          "skew": 1.1284557168204064
+        }
+      ],
+      "verdict": "iqr",
+      "note": "On the most skewed columns (Insulin, skew~3.08; SkinThickness, skew~0.89), IQR and 3-sigma diverge sharply -- 3-sigma's inflated standard deviation on skewed data pushes its bounds wider, missing most of what IQR catches. IQR remains the primary method; 3-sigma is shown only as a comparison."
+    },
+    "ensemble": {
+      "base_model_weights": {
+        "Decision Tree": 0.3596173979251927,
+        "XGBoost": 0.3252117635861807,
+        "Random Forest": 0.31517083848862665
+      },
+      "candidate_recalls": {
+        "Decision Tree": 0.8518518518518519,
+        "XGBoost": 0.8148148148148148,
+        "Random Forest": 0.7407407407407407,
+        "Logistic Regression": 0.7037037037037037,
+        "Gradient Boosting": 0.5185185185185185,
+        "Weighted Soft Voting Ensemble": 0.7962962962962963
+      },
+      "selected_model": "Decision Tree",
+      "ensemble_won": false,
+      "note": "Soft voting averages predicted probabilities across the 3 base models, which smooths out the Decision Tree's aggressive (high-Recall) behavior rather than amplifying it -- raising Precision but costing Recall, the opposite of this project's stated metric priority. The simpler single model wins on Recall."
+    }
   }
 }
