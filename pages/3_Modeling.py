@@ -68,6 +68,33 @@ st.dataframe(
 )
 
 st.write("")
+st.markdown("##### Confusion matrices (test set, default 0.5 threshold)")
+st.caption("Where each model actually goes wrong — TN/FP top row, FN/TP bottom row.")
+
+cm_models = list(model_df_sorted["model"]) 
+cols_per_row = 3
+for row_start in range(0, len(cm_models), cols_per_row):
+    row_models = cm_models[row_start:row_start + cols_per_row]
+    cm_cols = st.columns(cols_per_row)
+    for col, model_name in zip(cm_cols, row_models):
+        cm = next(r["confusion_matrix"] for r in results["model_results"] if r["model"] == model_name)
+        z = [[cm["tn"], cm["fp"]], [cm["fn"], cm["tp"]]]
+        fig_cm = go.Figure(data=go.Heatmap(
+            z=z, x=["Pred: No", "Pred: Yes"], y=["Actual: No", "Actual: Yes"],
+            colorscale=[[0, "#F7F5F2"], [1, TEAL]],
+            text=z, texttemplate="%{text}", textfont=dict(size=16, color=SLATE),
+            showscale=False,
+        ))
+        fig_cm.update_layout(
+            height=220, margin=dict(t=30, b=10, l=10, r=10),
+            title=dict(text=model_name, font=dict(size=13, family="Inter")),
+            paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter"),
+            yaxis=dict(autorange="reversed"),
+        )
+        with col:
+            st.plotly_chart(fig_cm, width="stretch")
+
+st.write("")
 st.markdown("##### Experiment: weighted soft-voting ensemble")
 ens = results["ensemble_result"]
 ens_exp = results["experiments"]["ensemble"]

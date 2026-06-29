@@ -18,7 +18,15 @@ page_header(
     "Source, population, feature definitions, and — most importantly — its data quality issues.",
 )
 
-tab1, tab2, tab3 = st.tabs(["Dataset Profile", "Missing Values", "Correlations"])
+c1, c2, c3, c4 = st.columns(4)
+metric_card("Total Patients", f"{results['dataset']['n_rows']}", c1)
+metric_card("Training Rows", f"{results['dataset']['n_train']}", c2)
+metric_card("Test Rows", f"{results['dataset']['n_test']}", c3)
+metric_card("Features", f"{results['dataset']['n_features']}", c4)
+st.caption("80/20 stratified split — performed before any preprocessing (Phase 3).")
+st.write("")
+
+tab1, tab2, tab3, tab4 = st.tabs(["Dataset Profile", "Missing Values", "Correlations", "Descriptive Statistics"])
 
 with tab1:
     col1, col2 = st.columns([1, 1])
@@ -139,6 +147,28 @@ with tab3:
     st.caption(
         "Glucose shows the strongest relationship with Outcome — consistent with "
         "published PIMA benchmarks and with the feature importances in Phase 5."
+    )
+
+with tab4:
+    st.markdown("##### Descriptive statistics (full dataset, before any preprocessing)")
+    describe = results["dataset"]["describe"]
+    desc_df = pd.DataFrame(describe).T
+    desc_df = desc_df[["count", "mean", "std", "min", "25%", "50%", "75%", "max"]]
+    desc_df.columns = ["Count", "Mean", "Std Dev", "Min", "25%", "Median", "75%", "Max"]
+    st.dataframe(
+        desc_df.style.format({c: "{:.2f}" for c in desc_df.columns}),
+        width="stretch",
+    )
+    st.markdown(
+        """
+        <div class="callout-amber">
+        <b>Read the Min column carefully:</b> Glucose, BloodPressure, SkinThickness,
+        Insulin, and BMI all show a minimum of <b>0</b> — not physiologically possible for
+        a living patient. That's the missing-value sentinel diagnosed in the Missing
+        Values tab, visible here in raw form before any cleaning.
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 footer()
